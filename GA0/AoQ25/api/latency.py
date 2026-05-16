@@ -15,7 +15,7 @@ app.add_middleware(
 )
 
 # Load telemetry
-with open("telemetry.json", "r") as f:
+with open("../telemetry.json", "r") as f:
     telemetry = json.load(f)
 
 # Request model
@@ -50,8 +50,14 @@ def latency(data: RequestData):
             if r["region"] == region
         ]
 
-        latencies = [r["latency_ms"] for r in records]
-        uptimes = [r["uptime"] for r in records]
+        latencies = [
+            r.get("latency_ms", 0)
+            for r in records
+        ]
+        uptimes = [
+            r.get("uptime", 0)
+            for r in records
+        ]
 
         result[region] = {
             "avg_latency": round(float(np.mean(latencies)), 2),
