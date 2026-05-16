@@ -4,22 +4,40 @@ from pydantic import BaseModel
 import json
 import numpy as np
 
-app = FastAPI()
+app = FastAPI(title="Latency API")
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Load telemetry
 with open("telemetry.json", "r") as f:
     telemetry = json.load(f)
 
+# Request model
 class RequestData(BaseModel):
     regions: list[str]
     threshold_ms: int
 
+# Home route
+@app.get("/")
+def home():
+    return {
+        "message": "Latency Monitoring API is running"
+    }
+
+# Health route
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
+
+# Main API
 @app.post("/api/latency")
 def latency(data: RequestData):
 
