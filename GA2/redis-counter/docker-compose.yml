@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  api:
+    build: ./app
+    container_name: fastapi_api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOST: redis
+
+  redis:
+    image: redis:7
+    container_name: redis_db
