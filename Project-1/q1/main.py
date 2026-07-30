@@ -1,0 +1,113 @@
+import json
+import os
+import threading
+from collections import defaultdict
+
+import requests
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import PlainTextResponse
+
+from agent import Agent
+from logger import log_entry, RUN_LOG, dump_log
+
+load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+LOG_URL_BASE = os.getenv("LOG_URL_BASE", "")
+
+if not TELEGRAM_BOT_TOKEN or not OPENAI_API_KEY:
+    raise ValueError("TELEGRAM_BOT_TOKEN and OPENAI_API_KEY must be set")
+
+agent = Agent(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL or None, model=OPENAI_MODEL)
+
+app = FastAPI(title="TDS Project 1 - Data Analyst Bot")
+
+TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+_run_id = 0
+_run_lock = threading.Lock()
+
+chat_contexts: dict[int, list[dict]] = defaultdict(list)
+
+
+def send_message(chat_id: int, text: str):
+    requests.post(f"{TELEGRAM_API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+    }, timeout=10)
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    global _run_id
+    body = await request.json()
+
+    msg = body.get("message", {})
+    chat_id = msg.get("chat", {}).get("id")
+    text = msg.get("text", "")
+
+    if not chat_id or not text:
+        return Response(status_code=200)
+
+    with _run_lock:
+        _run_id += 1
+        rid = _run_id
+
+    RUN_LOG.clear()
+    log_entry("system", f"Run {rid}: received message", meta={"chat_id": chat_id})
+
+    ctx = chat_contexts[chat_id]
+    ctx.append(text)
+
+    public_url = LOG_URL_BASE.rstrip("/")
+    log_url = f"{public_url}/logs/{rid}.jsonl"
+
+    try:
+        full_question = "\n".join(ctx) if len(ctx) > 1 else text
+        result = agent.run(full_question, log_url)
+
+        reply = json.dumps(result, ensure_ascii=False)
+        log_entry("system", f"Final reply: {reply}")
+
+        send_message(chat_id, reply)
+        ctx.clear()
+    except Exception as e:
+        err = {"answer": f"Error: {str(e)}", "log_url": log_url}
+        send_message(chat_id, json.dumps(err, ensure_ascii=False))
+        log_entry("system", f"Error: {str(e)}")
+        ctx.clear()
+
+    log_data = dump_log()
+    os.makedirs("logs", exist_ok=True)
+    with open(f"logs/{rid}.jsonl", "w") as f:
+        f.write(log_data)
+
+    return Response(status_code=200)
+
+
+@app.get("/logs/{run_id}.jsonl")
+async def get_log(run_id: int):
+    path = f"logs/{run_id}.jsonl"
+    if os.path.exists(path):
+        with open(path) as f:
+            return Response(content=f.read(), media_type="application/jsonl")
+    return PlainTextResponse("Log not found", status_code=404)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/")
+async def root():
+    return {"message": "TDS Project 1 - Data Analyst Bot is running"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
