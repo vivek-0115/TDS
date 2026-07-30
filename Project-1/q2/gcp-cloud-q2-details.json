@@ -1,0 +1,7 @@
+{
+  "student_email": "23f2004724@ds.study.iitm.ac.in",
+  "bucket_name": "q2-aa41e3a23a16537",
+  "bucket_nonce": "aa41e3a23a16537",
+  "location": "asia-south1",
+  "instructions": "Upload the provided eval.jsonl file unchanged to the bucket, and compute its SHA-256 hash using sha256sum."
+}
