@@ -99,6 +99,10 @@ async def webhook(request: Request):
     if not chat_id or not text:
         return Response(status_code=200)
 
+    if text == "/start":
+        send_message(chat_id, "Hi! I'm a data analyst bot. Send me a data-analysis question and I'll reply with the answer as JSON.")
+        return Response(status_code=200)
+
     with _run_lock:
         _run_id += 1
         rid = _run_id
@@ -106,8 +110,7 @@ async def webhook(request: Request):
     public_url = LOG_URL_BASE.rstrip("/")
     log_url = f"{public_url}/logs/{rid}.jsonl"
 
-    t = threading.Thread(target=process_and_reply, args=(chat_id, text, rid, log_url), daemon=False)
-    t.start()
+    process_and_reply(chat_id, text, rid, log_url)
 
     return Response(status_code=200)
 
