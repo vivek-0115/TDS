@@ -128,24 +128,21 @@ async def health():
 
 @app.post("/test")
 async def test(request: Request):
-    body = await request.json()
-    text = body.get("question", body.get("text", ""))
-    if not text:
-        return {"error": "no question provided"}
-    with _run_lock:
-        _run_id += 1
-        rid = _run_id
-    public_url = LOG_URL_BASE.rstrip("/")
-    log_url = f"{public_url}/logs/{rid}.jsonl"
-    RUN_LOG.clear()
-    result = get_agent().run(text, log_url)
-    log_data = dump_log()
     try:
-        with open(os.path.join(LOG_DIR, f"{rid}.jsonl"), "w") as f:
-            f.write(log_data)
-    except Exception:
-        pass
-    return {"answer": result, "log_url": log_url}
+        body = await request.json()
+        text = body.get("question", body.get("text", ""))
+        if not text:
+            return {"error": "no question provided"}
+        with _run_lock:
+            _run_id += 1
+            rid = _run_id
+        public_url = LOG_URL_BASE.rstrip("/")
+        log_url = f"{public_url}/logs/{rid}.jsonl"
+        RUN_LOG.clear()
+        result = get_agent().run(text, log_url)
+        return {"answer": result, "log_url": log_url}
+    except Exception as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
 @app.get("/")
