@@ -6,7 +6,7 @@ import urllib.request
 import pandas as pd
 from openai import OpenAI
 
-from logger import log_entry
+from src.logger import log_entry
 
 
 SYSTEM_PROMPT = """You are a data analyst AI assistant. Your job is to answer data-analysis questions.

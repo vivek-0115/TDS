@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import tempfile
 from collections import defaultdict
 
 import requests
@@ -8,8 +9,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from agent import Agent
-from logger import log_entry, RUN_LOG, dump_log
+from src.agent import Agent
+from src.logger import log_entry, RUN_LOG, dump_log
 
 load_dotenv()
 
@@ -19,18 +20,28 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 LOG_URL_BASE = os.getenv("LOG_URL_BASE", "")
 
-if not TELEGRAM_BOT_TOKEN or not OPENAI_API_KEY:
-    raise ValueError("TELEGRAM_BOT_TOKEN and OPENAI_API_KEY must be set")
-
-agent = Agent(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL or None, model=OPENAI_MODEL)
-
 app = FastAPI(title="TDS Project 1 - Data Analyst Bot")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 _run_id = 0
 _run_lock = threading.Lock()
+LOG_DIR = os.path.join(tempfile.gettempdir(), "bot_logs")
+os.makedirs(LOG_DIR, exist_ok=True)
 
 chat_contexts: dict[int, list[dict]] = defaultdict(list)
+
+agent = None
+
+
+def get_agent():
+    global agent
+    if agent is None:
+        agent = Agent(
+            api_key=OPENAI_API_KEY,
+            base_url=OPENAI_BASE_URL or None,
+            model=OPENAI_MODEL,
+        )
+    return agent
 
 
 def send_message(chat_id: int, text: str):
@@ -68,7 +79,7 @@ async def webhook(request: Request):
 
     try:
         full_question = "\n".join(ctx) if len(ctx) > 1 else text
-        result = agent.run(full_question, log_url)
+        result = get_agent().run(full_question, log_url)
 
         reply = json.dumps(result, ensure_ascii=False)
         log_entry("system", f"Final reply: {reply}")
@@ -76,14 +87,13 @@ async def webhook(request: Request):
         send_message(chat_id, reply)
         ctx.clear()
     except Exception as e:
-        err = {"answer": f"Error: {str(e)}", "log_url": log_url}
-        send_message(chat_id, json.dumps(err, ensure_ascii=False))
+        err_obj = {"answer": f"Error: {str(e)}", "log_url": log_url}
+        send_message(chat_id, json.dumps(err_obj, ensure_ascii=False))
         log_entry("system", f"Error: {str(e)}")
         ctx.clear()
 
     log_data = dump_log()
-    os.makedirs("logs", exist_ok=True)
-    with open(f"logs/{rid}.jsonl", "w") as f:
+    with open(os.path.join(LOG_DIR, f"{rid}.jsonl"), "w") as f:
         f.write(log_data)
 
     return Response(status_code=200)
@@ -91,7 +101,7 @@ async def webhook(request: Request):
 
 @app.get("/logs/{run_id}.jsonl")
 async def get_log(run_id: int):
-    path = f"logs/{run_id}.jsonl"
+    path = os.path.join(LOG_DIR, f"{run_id}.jsonl")
     if os.path.exists(path):
         with open(path) as f:
             return Response(content=f.read(), media_type="application/jsonl")
@@ -106,8 +116,3 @@ async def health():
 @app.get("/")
 async def root():
     return {"message": "TDS Project 1 - Data Analyst Bot is running"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
