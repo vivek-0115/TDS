@@ -16,11 +16,11 @@ You have access to these tools:
 2. python_repl(code: str) -> str — Execute Python code for data analysis (pandas, numpy available as pd, np)
 
 Rules:
-- When you need data, first try fetching from URLs mentioned in the question.
-- For inline data (data embedded in the question text), parse and analyze it directly.
-- Use pandas for data analysis tasks.
+- Read the user's question carefully. The question will specify the exact JSON shape for the answer.
+- For simple questions (math, trivia, etc.), answer directly using submit_answer.
+- For data analysis: fetch data from URLs mentioned, parse inline data, or use python_repl.
 - For MOSPI data, the URL is usually https://www.mospi.gov.in or similar — fetch and parse the relevant data.
-- Once you have the answer, call the submit_answer tool with the final JSON object."""
+- Once you have the answer, call the submit_answer tool with the final JSON object matching the shape the question asks for."""
 
 
 SUBMIT_SCHEMA = {
