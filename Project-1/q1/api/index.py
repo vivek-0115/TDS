@@ -28,28 +28,63 @@ _run_lock = threading.Lock()
 LOG_DIR = os.path.join(tempfile.gettempdir(), "bot_logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-chat_contexts: dict[int, list[dict]] = defaultdict(list)
+chat_contexts: dict[int, list] = defaultdict(list)
 
-agent = None
+_agent = None
+_agent_lock = threading.Lock()
 
 
 def get_agent():
-    global agent
-    if agent is None:
-        agent = Agent(
-            api_key=OPENAI_API_KEY,
-            base_url=OPENAI_BASE_URL or None,
-            model=OPENAI_MODEL,
-        )
-    return agent
+    global _agent
+    if _agent is None:
+        with _agent_lock:
+            if _agent is None:
+                _agent = Agent(
+                    api_key=OPENAI_API_KEY,
+                    base_url=OPENAI_BASE_URL or None,
+                    model=OPENAI_MODEL,
+                )
+    return _agent
 
 
 def send_message(chat_id: int, text: str):
-    requests.post(f"{TELEGRAM_API}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-    }, timeout=10)
+    try:
+        requests.post(f"{TELEGRAM_API}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": text,
+        }, timeout=30)
+    except Exception as e:
+        print(f"sendMessage error: {e}")
+
+
+def process_and_reply(chat_id: int, text: str, rid: int, log_url: str):
+    RUN_LOG.clear()
+    log_entry("system", f"Run {rid}: received message", meta={"chat_id": chat_id})
+
+    ctx = chat_contexts[chat_id]
+    ctx.append(text)
+
+    try:
+        full_question = "\n".join(ctx) if len(ctx) > 1 else text
+        result = get_agent().run(full_question, log_url)
+
+        reply = json.dumps(result, ensure_ascii=False)
+        log_entry("system", f"Final reply: {reply}")
+
+        send_message(chat_id, reply)
+        ctx.clear()
+    except Exception as e:
+        err_obj = {"answer": f"Error: {str(e)}", "log_url": log_url}
+        send_message(chat_id, json.dumps(err_obj, ensure_ascii=False))
+        log_entry("system", f"Error: {str(e)}")
+        ctx.clear()
+
+    log_data = dump_log()
+    try:
+        with open(os.path.join(LOG_DIR, f"{rid}.jsonl"), "w") as f:
+            f.write(log_data)
+    except Exception as e:
+        print(f"Log write error: {e}")
 
 
 @app.post("/webhook")
@@ -68,33 +103,11 @@ async def webhook(request: Request):
         _run_id += 1
         rid = _run_id
 
-    RUN_LOG.clear()
-    log_entry("system", f"Run {rid}: received message", meta={"chat_id": chat_id})
-
-    ctx = chat_contexts[chat_id]
-    ctx.append(text)
-
     public_url = LOG_URL_BASE.rstrip("/")
     log_url = f"{public_url}/logs/{rid}.jsonl"
 
-    try:
-        full_question = "\n".join(ctx) if len(ctx) > 1 else text
-        result = get_agent().run(full_question, log_url)
-
-        reply = json.dumps(result, ensure_ascii=False)
-        log_entry("system", f"Final reply: {reply}")
-
-        send_message(chat_id, reply)
-        ctx.clear()
-    except Exception as e:
-        err_obj = {"answer": f"Error: {str(e)}", "log_url": log_url}
-        send_message(chat_id, json.dumps(err_obj, ensure_ascii=False))
-        log_entry("system", f"Error: {str(e)}")
-        ctx.clear()
-
-    log_data = dump_log()
-    with open(os.path.join(LOG_DIR, f"{rid}.jsonl"), "w") as f:
-        f.write(log_data)
+    t = threading.Thread(target=process_and_reply, args=(chat_id, text, rid, log_url), daemon=False)
+    t.start()
 
     return Response(status_code=200)
 

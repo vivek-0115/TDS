@@ -137,7 +137,9 @@ class Agent:
             {"role": "user", "content": question},
         ]
 
-        for step in range(25):
+        last_content = None
+
+        for step in range(10):
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -151,11 +153,17 @@ class Agent:
             if not msg.tool_calls:
                 content = msg.content or ""
                 log_entry("assistant", content)
+
+                if content == last_content:
+                    return {"answer": content[:500], "log_url": log_url}
+
+                last_content = content
+
                 fallback = self._try_extract_json(content, log_url)
                 if fallback:
                     return fallback
-                if step >= 23:
-                    return {"answer": content[:200], "log_url": log_url}
+                if step >= 8:
+                    return {"answer": content[:500], "log_url": log_url}
                 messages.append({"role": "assistant", "content": content})
                 continue
 
