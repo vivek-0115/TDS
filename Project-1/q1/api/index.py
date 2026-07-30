@@ -128,6 +128,7 @@ async def health():
 
 @app.post("/test")
 async def test(request: Request):
+    global _run_id
     try:
         body = await request.json()
         text = body.get("question", body.get("text", ""))
