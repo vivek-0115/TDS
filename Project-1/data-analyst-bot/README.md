@@ -1,6 +1,6 @@
 # TDS Project 1 - Data Analyst Telegram Bot
 
-An LLM-powered Telegram bot that answers data-analysis questions. Receives a plain-text question, analyzes it using GPT-4o (via AIPipe), and replies with a single JSON object.
+An LLM-powered Telegram bot that answers data-analysis questions. Receives a plain-text question via webhook, analyzes it using GPT-4o (via AIPipe) with tools (`fetch_url`, `python_repl`), and replies with a single JSON object matching **exactly** the shape the question asked for.
 
 ## Quick Start
 
@@ -13,60 +13,51 @@ An LLM-powered Telegram bot that answers data-analysis questions. Receives a pla
    ```bash
    cp .env.example .env
    ```
-   Fill in your `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, and `LOG_URL_BASE`.
+   Fill in `TELEGRAM_BOT_TOKEN` and `OPENAI_API_KEY` (AIPipe key). For the public run log set `GITHUB_REPO` and `GITHUB_TOKEN` (fine-grained PAT with Contents: Read/Write); the bot pushes `run.jsonl` to the repo and `log_url` is its public raw GitHub link.
 
 3. **Run locally**
    ```bash
-   uvicorn main:app --host 0.0.0.0 --port 8080
+   uvicorn api.index:app --port 8080
    ```
 
-4. **Set the Telegram webhook**
+4. **Test locally** (agent, Telegram and GitHub calls mocked):
+   ```bash
+   python tests/test_local.py
+   ```
+
+5. **Set the Telegram webhook** (uses `WEBHOOK_SECRET` from `.env` automatically):
    ```bash
    python set_webhook.py https://your-deployed-url/webhook
    ```
 
-## Deploy
+## Deploy (Vercel)
 
-### Render
-1. Push to GitHub
-2. Create a new **Web Service** on Render, connect your repo
-3. Set the **Start Command** to `uvicorn main:app --host 0.0.0.0 --port $PORT`
-4. Add environment variables:
-   - `TELEGRAM_BOT_TOKEN`
-   - `OPENAI_API_KEY`
-   - `OPENAI_BASE_URL` = `https://aipipe.org/openai/v1`
-   - `OPENAI_MODEL` = `gpt-4o`
-   - `LOG_URL_BASE` = `https://your-app.onrender.com`
-
-### Docker
 ```bash
-docker build -t tds-bot .
-docker run -p 8080:8080 --env-file .env tds-bot
+vercel --prod
 ```
+
+Set these environment variables in the Vercel project:
+- `TELEGRAM_BOT_TOKEN`
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL` = `https://aipipe.org/openai/v1`
+- `OPENAI_MODEL` = `gpt-4o`
+- `GITHUB_REPO` = `owner/repo` (public repo hosting `run.jsonl`)
+- `GITHUB_TOKEN` = PAT with Contents: Read/Write on that repo
+- `WEBHOOK_SECRET` = random string (must match the one used by `set_webhook.py`)
 
 ## API
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/webhook` | POST | Telegram bot webhook |
-| `/logs/{id}.jsonl` | GET | Run log as JSONL |
+| `/webhook` | POST | Telegram bot webhook (verifies `X-Telegram-Bot-Api-Secret-Token`) |
+| `/test` | POST | Debug endpoint: returns the reply without sending to Telegram |
 | `/health` | GET | Health check |
 
 ## How it Works
 
 1. Telegram sends the question via webhook
-2. The bot passes it to an LLM agent with tools (fetch_url, python_repl)
-3. The agent analyzes the data (fetches from URLs, runs Python code)
-4. The agent submits the answer via `submit_answer` tool
-5. The bot replies with `{"answer": ..., "log_url": "..."}`
-6. Every interaction is logged as JSONL
-
-## Test Locally
-
-Clone the official test harness:
-```bash
-git clone https://github.com/Jivraj-18/tds-p1-t2-2026-telegram-bot
-cd tds-p1-t2-2026-telegram-bot
-pip install -r requirements.txt
-python run.py --bot-token YOUR_TOKEN --bot-username YOUR_BOT_USERNAME
-```
+2. The bot keeps per-chat context and always answers the **last** message
+3. The agent analyzes the data (fetches URLs, runs Python via `python_repl`)
+4. The agent submits the answer via the `submit_answer` tool
+5. The bot enforces the exact JSON shape the question asked for (drops extra keys, fills missing ones, only adds `log_url` if the question asked for it)
+6. The exchange is appended to the public `run.jsonl` log
