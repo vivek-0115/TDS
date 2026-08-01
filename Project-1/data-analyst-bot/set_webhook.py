@@ -12,8 +12,13 @@ if not token:
 
 url = sys.argv[1] if len(sys.argv) > 1 else input("Enter webhook URL (e.g. https://your-app.vercel.app/webhook): ")
 
+payload = {"url": url}
+secret = os.getenv("WEBHOOK_SECRET", "").strip()
+if secret:
+    payload["secret_token"] = secret
+
 resp = requests.post(
     f"https://api.telegram.org/bot{token}/setWebhook",
-    json={"url": url}
+    json=payload,
 )
 print(resp.json())

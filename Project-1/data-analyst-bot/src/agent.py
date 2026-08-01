@@ -9,36 +9,41 @@ from openai import OpenAI
 from src.logger import log_entry
 
 
-SYSTEM_PROMPT = """You are a data analyst AI assistant. Your job is to answer data-analysis questions.
-
-You have access to these tools:
-1. fetch_url(url: str) -> str — Fetch content from a URL (CSV, JSON, HTML tables, etc.)
-2. python_repl(code: str) -> str — Execute Python code for data analysis (pandas, numpy available as pd, np)
+SYSTEM_PROMPT = """You are a data analyst AI assistant working inside a Telegram bot.
+The user's LAST message is the question to answer (earlier messages are context only).
+The question normally ends with an exact JSON shape to reply with, e.g.
+{"answer": ...} or {"state": "<state name>"}.
 
 Rules:
-- Read the user's question carefully. The question will specify the exact JSON shape for the answer.
-- For simple questions (math, trivia, etc.), answer directly using submit_answer.
-- For data analysis: fetch data from URLs mentioned, parse inline data, or use python_repl.
-- For MOSPI data, the URL is usually https://www.mospi.gov.in or similar — fetch and parse the relevant data.
-- Once you have the answer, call the submit_answer tool with the final JSON object matching the shape the question asks for."""
+- Reply with ONLY the JSON object the question asks for: exactly its keys and
+  nesting, no extra keys, no explanation, no markdown.
+- Do NOT add a "log_url" key unless the question's shape asks for it - the
+  platform adds the public log URL itself.
+- You have these tools:
+  1. fetch_url(url) - fetch a URL (CSV, JSON, HTML table, etc.)
+  2. python_repl(code) - run Python (pandas as pd, numpy as np); store the
+     answer in a variable named `result`.
+- For simple math/trivia questions, answer directly with submit_answer.
+- For data questions: fetch/parse the data, compute the answer, then submit.
+- If a data source is unreachable or data is missing, still answer from your
+  general knowledge (a reasonable estimate is far better than giving up) -
+  NEVER reply with explanations, error text, or a refusal; always submit the
+  JSON the question asked for.
+- When ready, call submit_answer with the complete JSON object matching the
+  requested shape."""
 
 
 SUBMIT_SCHEMA = {
     "name": "submit_answer",
-    "description": "Submit the final answer as a JSON object with 'answer' and 'log_url' keys",
+    "description": "Submit the final answer: a JSON object matching exactly the shape the question requested",
     "parameters": {
         "type": "object",
         "properties": {
             "answer": {
-                "type": "object",
-                "description": "The answer object matching the shape requested in the question",
-            },
-            "log_url": {
-                "type": "string",
-                "description": "URL to the JSONL log file",
+                "description": "The complete JSON object (or plain value) matching the requested shape",
             },
         },
-        "required": ["answer", "log_url"],
+        "required": ["answer"],
         "additionalProperties": False,
     },
 }
@@ -51,9 +56,7 @@ tools = [
             "description": "Fetch content from a URL. Returns text content.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "The URL to fetch"}
-                },
+                "properties": {"url": {"type": "string", "description": "The URL to fetch"}},
                 "required": ["url"],
                 "additionalProperties": False,
             },
@@ -66,9 +69,7 @@ tools = [
             "description": "Execute Python code for data analysis. pandas available as pd, numpy as np. Store result in variable named 'result'.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "code": {"type": "string", "description": "Python code to execute"}
-                },
+                "properties": {"code": {"type": "string", "description": "Python code to execute"}},
                 "required": ["code"],
                 "additionalProperties": False,
             },
@@ -129,82 +130,85 @@ class Agent:
         self.client = OpenAI(**kwargs)
         self.model = model
 
-    def run(self, question: str, log_url: str) -> dict:
-        log_entry("user", question)
+    def run(self, messages: list[dict]) -> dict:
+        """Answer the LAST message; earlier messages are context.
 
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": question},
-        ]
-
+        Returns the answer JSON object (any shape). Raises on failure.
+        """
+        msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + list(messages)
         last_content = None
 
-        for step in range(10):
+        for step in range(8):
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=msgs,
                 tools=tools,
                 tool_choice="auto",
                 temperature=0.1,
             )
-
             msg = response.choices[0].message
 
             if not msg.tool_calls:
                 content = msg.content or ""
                 log_entry("assistant", content)
-
                 if content == last_content:
-                    return {"answer": content[:500], "log_url": log_url}
-
+                    raise ValueError("agent stalled without an answer")
                 last_content = content
 
-                fallback = self._try_extract_json(content, log_url)
-                if fallback:
+                fallback = self._try_extract_json(content)
+                if fallback is not None:
                     return fallback
-                if step >= 8:
-                    return {"answer": content[:500], "log_url": log_url}
-                messages.append({"role": "assistant", "content": content})
+                if step >= 7:
+                    raise ValueError("agent did not produce a JSON answer")
+                msgs.append({"role": "assistant", "content": content})
                 continue
 
-            messages.append(msg)
-
+            msgs.append(msg)
             for tc in msg.tool_calls:
                 fn_name = tc.function.name
                 args = json.loads(tc.function.arguments)
-                log_entry("tool_call", f"{fn_name}({json.dumps(args)})", meta={"tool": fn_name, "args": args})
-
+                log_entry("tool_call", f"{fn_name}({json.dumps(args)})",
+                          meta={"tool": fn_name, "args": args})
                 if fn_name == "submit_answer":
-                    args["log_url"] = log_url
-                    return args
-
+                    return args.get("answer")
                 result = TOOL_IMPL[fn_name](**args)
                 log_entry("tool_result", str(result)[:500], meta={"tool": fn_name})
-                messages.append({
+                msgs.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": str(result)[:4000],
                 })
 
-        return {"answer": "Failed to process question", "log_url": log_url}
+        raise ValueError("agent step limit reached")
 
-    def _try_extract_json(self, content: str, log_url: str) -> dict | None:
-        m = re.search(r'\{\s*"answer"\s*:', content, re.DOTALL)
-        if m:
-            try:
-                start = m.start()
-                depth = 0
-                for i in range(start, len(content)):
-                    if content[i] == "{":
-                        depth += 1
-                    elif content[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            parsed = json.loads(content[start:i + 1])
-                            if "answer" in parsed:
-                                if "log_url" not in parsed:
-                                    parsed["log_url"] = log_url
-                                return parsed
-            except (json.JSONDecodeError, IndexError):
-                pass
+    @staticmethod
+    def _try_extract_json(content: str) -> dict | None:
+        """Pull the first balanced {...} object out of model prose, if any."""
+        start = content.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(content)):
+            ch = content[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(content[start:i + 1])
+                    except json.JSONDecodeError:
+                        return None
         return None
